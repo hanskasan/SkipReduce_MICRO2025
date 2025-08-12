@@ -11,60 +11,61 @@ export NCCL_FIXED_SKIP='1'
 export FSDP_MASK_PROB='0'
 
 # export NCCL_P2P_DISABLE='1'
-
+export NCCL_MAX_NCHANNELS='1'
 
 ##### DEFINE RUNNERS #####
-export DP_RUNNER_TIMING="torchrun --nnodes=1 --nproc_per_node 8 --master-port 1234 run_swag.py \
+export DP_RUNNER_TIMING="torchrun --nnodes=1 --nproc_per_node 4 --master-port 1234 run_swag.py \
 --model_name_or_path google-bert/bert-large-uncased  \
 --do_train \
 --learning_rate 5e-5 \
 --num_train_epochs 3 \
---per_device_train_batch_size=2 \
+--per_device_train_batch_size=4 \
 --per_device_eval_batch_size=32 \
 --overwrite_output_dir \
 --logging_strategy no \
 --eval_strategy no \
 --save_strategy no \
 --max_steps 25 \
---seed 0 \
+--seed 1234 \
 --ddp_bucket_cap_mb 25 \
 "
 
-export DP_RUNNER="torchrun --nnodes=1 --nproc_per_node 8 --master-port 1234 run_swag.py \
+export DP_RUNNER="torchrun --nnodes=1 --nproc_per_node 4 --master-port 1234 run_swag.py \
 --model_name_or_path google-bert/bert-large-uncased  \
 --do_train \
 --do_eval \
 --learning_rate 5e-5 \
 --num_train_epochs 3 \
---per_device_train_batch_size=2 \
+--per_device_train_batch_size=4 \
 --per_device_eval_batch_size=32 \
 --overwrite_output_dir \
 --logging_strategy tta \
 --eval_strategy tta \
 --tta_period 60 \
 --save_strategy no \
+--max_steps 5000 \
 --logging_first_step \
 --eval_on_start \
 --seed 0 \
 "
 
-export TOP1_DP_RUNNER="torchrun --nnodes=1 --nproc_per_node 8 --master-port 1234 run_swag.py \
+export TOP1_DP_RUNNER="torchrun --nnodes=1 --nproc_per_node 4 --master-port 1234 run_swag.py \
 --model_name_or_path google-bert/bert-large-uncased  \
 --do_train \
 --do_eval \
 --learning_rate 5e-5 \
 --num_train_epochs 3 \
---per_device_train_batch_size=2 \
+--per_device_train_batch_size=4 \
 --per_device_eval_batch_size=32 \
 --overwrite_output_dir \
 --logging_strategy no \
 --eval_strategy steps \
---eval_steps 266 \
+--eval_steps 57 \
 --save_strategy no \
+--max_steps 5000 \
 --logging_first_step \
 --eval_on_start \
 --seed 0 \
---data_seed 0 \
 "
 
 ##### RUN! #####
@@ -83,9 +84,9 @@ $TOP1_DP_RUNNER > aot_reports/top1.report
 
 # SkipReduce 50%
 export COMM_HOOK="NONE"
-export LD_PRELOAD=/workspace/NCCL/random_selective/build/lib/libnccl.so
+export LD_LIBRARY_PATH=/app/SkipReduce/test_run/SkipReduce-2.0/build/lib
 export NCCL_SHIFT='1'
 export NCCL_CHUNK_INC='1'
 export NCCL_PROTECT_SIZE_0='31254528' # Protect the embedding layer
-export NCCL_SKIPS='4'
+export NCCL_SKIPS='2'
 $DP_RUNNER > aot_reports/skipreduce_50.report

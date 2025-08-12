@@ -14,6 +14,6 @@ pip install pillow==10.2.0
 
 apt install --assume-yes build-essential devscripts debhelper fakeroot
 
-huggingface-cli login --token <YOUR TOKEN>
+huggingface-cli login --token "<YOUR TOKEN>"
 # git config --global user.email "<YOUR EMAIL>"
 # git config --global user.name "<YOUR USERNAME>"

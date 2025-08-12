@@ -267,6 +267,9 @@ class CustomTrainer(Trainer):
             # for name, param in model.named_parameters():
                 # print(name)
 
+            if os.environ["COMM_HOOK"] == "LLAMA_TOP1_NOMEM":
+                model.register_comm_hook(None, topk_allreduce)
+
             if os.environ["COMM_HOOK"] == "LLAMA_TOP1":
                 model.register_comm_hook(None, topk_allreduce_with_memory)
 
@@ -675,6 +678,9 @@ def hacking_topk(input):
     input_abs = torch.abs(input)
     threshold = torch.topk(input_abs, k, largest=True).values[-1]
     mask = (input_abs >= threshold).bool()
+
+    del input_abs
+    del threshold
 
     return mask
 

@@ -21,7 +21,9 @@ from torch.distributed.algorithms.ddp_comm_hooks.powerSGD_hook import PowerSGDSt
 bucket_idx = 0
 num_of_buckets = 6
 grad_mem = []
+sum_comm_time = 0
 
+# @nvtx.annotate("topk", color="yellow")
 def hacking_topk(input):
     pruning_ratio = 0.99
     topk_selection = 1 - pruning_ratio
@@ -30,8 +32,6 @@ def hacking_topk(input):
     input_abs = torch.abs(input)
     threshold = torch.topk(input_abs, k, largest=True).values[-1]
     mask = (input_abs >= threshold).bool()
-    del input_abs
-    del threshold
 
     return mask
 
@@ -202,10 +202,10 @@ def topk_allreduce(process_group: dist.ProcessGroup, bucket: dist.GradBucket
     group_to_use = process_group if process_group is not None else dist.group.WORLD
 
     grads = bucket.buffer()
-    mask = hacking_topk(grads)
+    message = hacking_topk(grads)
 
     return (
-        dist.all_reduce(grads * mask, op=dist.ReduceOp.AVG, group=group_to_use, async_op=True)
+        dist.all_reduce(message, op=dist.ReduceOp.AVG, group=group_to_use, async_op=True)
         .get_future()
         .then(lambda fut: fut.value()[0])
     )
@@ -224,15 +224,15 @@ def topk_allreduce_with_memory(process_group: dist.ProcessGroup, bucket: dist.Gr
     grads = bucket.buffer()
 
     acc = grads
-    if iter > 0:
+    if iter > 1:
         acc += grad_mem[(bucket_idx - 1) % num_of_buckets]
 
     mask = hacking_topk(acc)
 
     # Initially, initialize grad_mem
-    if iter == 0:
+    if iter == 1:
         grad_mem.append(acc * ~mask)
-    elif iter > 0:
+    elif iter > 1:
         grad_mem[(bucket_idx - 1) % num_of_buckets] = acc * ~mask
 
     # Increment bucket index
@@ -243,6 +243,7 @@ def topk_allreduce_with_memory(process_group: dist.ProcessGroup, bucket: dist.Gr
         .get_future()
         .then(lambda fut: fut.value()[0])
     )
+
 
 def random_prune_allreduce(process_group: dist.ProcessGroup, bucket: dist.GradBucket
 ) -> torch.futures.Future[torch.Tensor]:
@@ -329,8 +330,8 @@ def default_allreduce(
 ) -> torch.futures.Future[torch.Tensor]:
 
     # HANS: For debugging
-    # if torch.distributed.get_rank() == 0:
-        # print(bucket.buffer().numel())
+    if torch.distributed.get_rank() == 0:
+        print(bucket.buffer().numel())
 
     temp = _allreduce_fut(process_group, bucket.buffer())
     return temp
@@ -545,7 +546,9 @@ def main():
 
     parser.add_argument('--flat_lr', default=False, action="store_true")
 
-    parser.add_argument('--logging_period', default=10, type=int)
+    parser.add_argument('--timestamp_period', default=60, type=int)
+
+    parser.add_argument('--seed', default=0, type=int)
 
     args = parser.parse_args()
     os.environ['MASTER_ADDR'] = '127.0.0.1'
@@ -576,13 +579,13 @@ def train(gpu, train_dataset, test_dataset, args):
     dist.init_process_group(backend='nccl', world_size=args.gpus, rank=gpu)
 
     #SETUPS
-    setrandom(0)
+    setrandom(args.seed)
 
     # loss_name = "./aot_reports_1ring/vgg19/cifar100/loss_"+str(args.method)
     trainacc_name = "./aot_reports/trainacc_"+str(args.method)
     testacc_name = "./aot_reports/testacc_"+str(args.method)
 
-    print("We are headed to:", trainacc_name)
+    # print("We are headed to:", trainacc_name)
 
     # filename = loss_name
     # ext = ".csv"
@@ -607,27 +610,18 @@ def train(gpu, train_dataset, test_dataset, args):
 
     model.cuda(gpu)
     model = nn.parallel.DistributedDataParallel(model, device_ids=[gpu], output_device=gpu)
-    # model = nn.parallel.DistributedDataParallel(model, device_ids=[gpu], output_device=gpu, bucket_cap_mb=1024)
-    # model = nn.parallel.DistributedDataParallel(model, device_ids=[gpu], output_device=gpu, bucket_cap_mb=0.0001)
-
-    # dist._DEFAULT_FIRST_BUCKET_BYTES = 1
 
 
-    # MODIFY HOOK
-    # model.register_comm_hook(None, default_allreduce)
-    # model.register_comm_hook(None, default_allreduce_with_hash)
-    # model.register_comm_hook(None, default_allreduce_with_pmhash)
-    # model.register_comm_hook(None, default_allreduce_with_roll)
-    # model.register_comm_hook(None, random_prune_allreduce)
-    # model.register_comm_hook(None, random_prune_protect_allreduce)
-    # model.register_comm_hook(None, random_prune_attack_allreduce)
-    # model.register_comm_hook(None, random_prune_randomratio_allreduce)
-    # model.register_comm_hook(None, random_prune_randomratio_protect_allreduce)
-    # model.register_comm_hook(None, topk_allreduce)
-    model.register_comm_hook(None, topk_allreduce_with_memory)
+    # MODIFY HOOK    
+    if os.environ["COMM_HOOK"] == "VGG_DEBUG":
+        model.register_comm_hook(None, default_allreduce)
 
-    # state = PowerSGDState(process_group=None, matrix_approximation_rank=4)
-    # model.register_comm_hook(state, powerSGD_hook)
+    if os.environ["COMM_HOOK"] == "VGG_TOP1":
+        model.register_comm_hook(None, topk_allreduce_with_memory)
+
+    if os.environ["COMM_HOOK"] == "VGG_POWERSGD":
+        state = PowerSGDState(process_group=None, matrix_approximation_rank=4)
+        model.register_comm_hook(state, powerSGD_hook)
 
     #HYPERPARAMETERS
 
@@ -673,13 +667,13 @@ def train(gpu, train_dataset, test_dataset, args):
     # histogram_zeros = torch.zeros(len(bin_edges) -1, dtype=torch.int64).cuda()
 
     # Delete report files if exist
-    if torch.distributed.get_rank() == 0:
-        try:
+    #if torch.distributed.get_rank() == 0:
+    #    try:
             # os.remove(loss_name+".csv")
-            os.remove(trainacc_name+".txt")
-            os.remove(testacc_name+".txt")
-        except:
-            print("No existing report files found.")
+    #        os.remove(trainacc_name+".txt")
+    #        os.remove(testacc_name+".txt")
+    #    except:
+    #        print("No existing report files found.")
 
     last_timestamp = time.time()
 
@@ -691,8 +685,25 @@ def train(gpu, train_dataset, test_dataset, args):
 
             model.train()
 
-            # if idx >= 1:
-                # assert False
+            if idx == 101:
+                dist.barrier()
+                torch.cuda.synchronize()
+                start_time = time.time()
+
+            if idx == 201:
+                dist.barrier()
+                torch.cuda.synchronize()
+                elapsed_time = (time.time() - start_time) / 100
+
+                # Average the elapsed time across the workers
+                temp = torch.tensor(elapsed_time).cuda()
+                dist.all_reduce(temp, op=dist.ReduceOp.AVG)
+                dist.barrier()
+                if dist.get_rank() == 0:
+                    print(temp.item())
+
+                break
+                
 
             if args.datatype=="F16":
                 images = images.cuda(gpu, non_blocking=True).half()
@@ -729,70 +740,14 @@ def train(gpu, train_dataset, test_dataset, args):
             if not args.flat_lr:
                 scheduler.step()
             
-            # Dump loss
-            # if gpu == 0:
-                # print('Epoch [{}/{}], Step [{}/{}], Loss: {:.4f}'.format(epoch + 1, args.epochs, i + 1, total_step, loss.item()))
-                # with open(loss_name+ext, "a+") as f:
-                    # print("{}".format(loss.item()), file=f)
 
-            # To list the parameters
-            # for name, param in model.named_parameters():
-                # if torch.distributed.get_rank() == 0 and param.requires_grad:
-                    # print("Name:", name, "Size:", param.numel())
-                    # print(name)
-            # assert False
-
-            # Dump gradient histogram
-            # if gpu == 0:
-            #     if epoch in dump_grad_epochs and idx==0:
-            #         g = torch.Tensor().cuda(gpu)
-                    
-            #         for params in model.parameters():
-            #             g_temp = params.grad
-            #             g_temp = torch.flatten(g_temp)                    
-            #             g = torch.cat((g, g_temp))
-                    
-            #         # Find bottom-k
-            #         bottom_ratio = 0.25
-            #         k = int(bottom_ratio * g.size()[0])
-            #         grad_abs = torch.abs(g)
-            #         temp = torch.topk(grad_abs, k, largest=False)
-            #         threshold = temp.values[-1]
-
-            #         dumpname = "./bottom_grads/vgg19/cifar100/bottom_25/dump_epoch"+str(epoch)
-
-            #         bin_indices = torch.bucketize(temp.indices, bin_edges, right=True)
-            #         bin_indices -= 1
-            #         hist = torch.bincount(bin_indices)
-
-            #         hist_at_cpu = hist.cpu().numpy()
-
-            #         with open(dumpname, 'w') as f:
-            #             np.savetxt(f, hist_at_cpu)
-
-            # torch.distributed.barrier()
-
-            # HANS: For debugging
-            # print("Delta at GPU", torch.distributed.get_rank(), "is", time.time() - last_timestamp)
-
-            # if (time.time() - last_timestamp) >= args.timestamp_period:
-            #     if gpu == 0:
-            #         print("Evaluate at iteration", idx, "at time", time.time(), "!")
-            #         evaluation(model, gpu, epoch+1, eval_loader, trainacc_name, "Train", args)
-            #         evaluation(model, gpu, epoch+1, test_loader, testacc_name, "Test", args)
+            #if gpu == 0:
+            #    if (time.time() - last_timestamp) >= args.timestamp_period:
+            #        print("Evaluate at iteration", idx, "at time", time.time(), "!")
+            #        evaluation(model, gpu, epoch+1, eval_loader, trainacc_name, "Train", args)
+            #        evaluation(model, gpu, epoch+1, test_loader, testacc_name, "Test", args)
             
-            #     torch.distributed.barrier()
-            #     last_timestamp = time.time()
-
-
-            if gpu == 0:
-                # if (time.time() - last_timestamp) >= args.timestamp_period:
-                if (idx % args.logging_period) == 0 and idx > 0:
-                    print("Evaluate at iteration", idx, "at time", time.time(), "!")
-                    evaluation(model, gpu, epoch+1, eval_loader, trainacc_name, "Train", args)
-                    evaluation(model, gpu, epoch+1, test_loader, testacc_name, "Test", args)
-            
-                    last_timestamp = time.time()
+            #        last_timestamp = time.time()
 
             idx += 1
 

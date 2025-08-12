@@ -31,42 +31,14 @@ export MODEL_PATH='meta-llama/Llama-3.2-1B'
 # --seed 1234 --data_seed 1234"
 
 
-export RUNNER="torchrun --nnodes=1 --nproc_per_node 4 llama_glue.py --model_name_or_path $MODEL_PATH \
---task_name $TASK_NAME --do_train --do_eval False --do_predict False --max_seq_length 128 --per_device_train_batch_size 8 --per_device_eval_batch_size 32 --learning_rate 5e-6 \
---num_train_epochs 1 --ddp_find_unused_parameters False --save_strategy no --overwrite_output_dir \
---eval_strategy tta --tta_period 60 --logging_strategy no --logging_steps=100 --logging_first_step --eval_on_start --max_steps 2500 \
---seed 1234 --data_seed 1234 --ddp_bucket_cap_mb 25"
-
 export TIMING_RUNNER="torchrun --nnodes=1 --nproc_per_node 4 llama_glue.py --model_name_or_path $MODEL_PATH \
 --task_name $TASK_NAME --do_train --do_eval False --do_predict False --max_seq_length 128 --per_device_train_batch_size 8 --per_device_eval_batch_size 32 --learning_rate 5e-6 \
 --num_train_epochs 3 --ddp_find_unused_parameters False --save_strategy no --overwrite_output_dir \
 --eval_strategy no --logging_strategy no --logging_steps=100 --eval_steps=100 --max_steps 25 \
 --seed 1234 --data_seed 1234 --ddp_bucket_cap_mb 25"
 
-export TOP1_RUNNER="torchrun --nnodes=1 --nproc_per_node 4 llama_glue.py --model_name_or_path $MODEL_PATH \
---task_name $TASK_NAME --do_train --do_eval False --do_predict False --max_seq_length 128 --per_device_train_batch_size 8 --per_device_eval_batch_size 32 --learning_rate 5e-6 \
---num_train_epochs 3 --ddp_find_unused_parameters False --save_strategy no --overwrite_output_dir \
---eval_strategy steps --logging_strategy no --logging_steps=100 --eval_steps=69 --eval_on_start --max_steps 2500 \
---seed 1234 --data_seed 1234 --ddp_bucket_cap_mb 25"
-
 ##### COMMANDS FOR DP #####
 
-# Baseline
-export COMM_HOOK="NONE"
-$RUNNER > aot_reports/baseline.report
-
-# PowerSGD
-export COMM_HOOK="LLAMA_POWERSGD"
-$RUNNER > aot_reports/powersgd.report
-
 # Top-1%
-export COMM_HOOK="LLAMA_TOP1"
-$TOP1_RUNNER > aot_reports/top1.report
-
-# SkipReduce 50%
-export COMM_HOOK="NONE"
-export LD_LIBRARY_PATH=/app/SkipReduce/test_run/SkipReduce-2.0/build/lib
-export NCCL_SHIFT='1'
-export NCCL_CHUNK_INC='1'
-export NCCL_SKIPS='4'
-$RUNNER > aot_reports/skipreduce_50.report
+export COMM_HOOK="LLAMA_TOP1_NOMEM"
+$TIMING_RUNNER

@@ -17,6 +17,12 @@ warnings.filterwarnings("ignore", category=DeprecationWarning)
 
 from torch.distributed.algorithms.ddp_comm_hooks.powerSGD_hook import PowerSGDState, powerSGD_hook
 
+# Additional variables for memory
+bucket_idx = 0
+num_of_buckets = 6
+grad_mem = []
+sum_comm_time = 0
+
 # @nvtx.annotate("topk", color="yellow")
 def hacking_topk(input):
     pruning_ratio = 0.99
